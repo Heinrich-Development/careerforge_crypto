@@ -1,0 +1,32 @@
+name: careerforge_crypto
+description: >-
+  The CareerForge key hierarchy: Argon2id, HKDF, and the AES-256-GCM envelope
+  every piece of user content is sealed in.
+version: 1.0.0
+homepage: https://careerforge.app
+repository: https://github.com/Heinrich-Development/careerforge_crypto
+issue_tracker: https://github.com/Heinrich-Development/careerforge_crypto/issues
+publish_to: none
+
+environment:
+  sdk: '^3.10.3'
+
+
+# Deliberately short, and deliberately boring. This package is the one intended
+# to be read by someone deciding whether to trust the product, so every
+# dependency here is a liability to justify:
+#
+#   pointycastle -- the primitives themselves (Argon2id, AES-GCM). Pure Dart,
+#                   no FFI, no plugins.
+#   crypto       -- HMAC-SHA256, for HKDF.
+#
+# Nothing that can open a socket, touch a file or reach a platform channel. A
+# dependency that could is a dependency that could exfiltrate a key, and the
+# package boundary exists to make adding one a visible act.
+dependencies:
+  crypto: ^3.0.0
+  pointycastle: ^4.0.0
+
+dev_dependencies:
+  lints: ^6.0.0
+  test: ^1.25.5
