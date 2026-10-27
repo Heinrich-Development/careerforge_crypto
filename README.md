@@ -4,7 +4,8 @@
 
 # careerforge_crypto
 
-**The encryption used to protect CV data in CareerForge.**
+**The encryption behind CareerForge's claim that its server cannot read
+your CV.**
 
 </div>
 
@@ -13,63 +14,47 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/licence-Apache--2.0-blue.svg" alt="Licence: Apache-2.0"></a>
 </p>
 
-This repository contains the Dart reference implementation of the encryption
-used by [CareerForge](https://careerforge.app).
+[CareerForge](https://careerforge.app) encrypts what you write in your
+browser, and the server stores ciphertext it cannot open. This package is
+the part worth reading if you want to check that: the key hierarchy, the
+recovery code, the envelope format, and a pure-Dart reference engine.
 
-CareerForge encrypts CV content in the browser before storing it on the
-server. The server can store and sync the data without having the keys
-needed to decrypt it. This package covers the key hierarchy, password-based
-key derivation, recovery codes, and the format used to encrypt and decrypt
-data. I've made it public so the encryption format can be inspected and
-tested independently of the main application.
+It depends on `pointycastle` (Argon2id, AES-GCM) and `crypto` (HMAC-SHA256)
+and nothing else. Nothing here can open a socket, read a file or reach a
+platform channel, and the package boundary keeps it that way.
 
-The implementation uses `pointycastle` for Argon2id and AES-GCM, and
-`crypto` for HMAC-SHA256. It has no networking, file I/O or platform
-integrations, and it is a separate package so that adding a dependency is a
-visible decision rather than something that happens in passing.
-
-The CareerForge application, its backend and the production browser
-implementation are not part of this repository. The browser implementation
-uses WebCrypto and Argon2 in WebAssembly, and is currently checked by hand
-against the test vectors here. Automated cross-implementation testing is
-something I still want to add.
+Not in this repository: the app, the server, and the browser engine the app
+uses in production (WebCrypto, with Argon2 in WebAssembly). That engine is
+checked against the vectors here by hand when its Argon2 build changes.
+There is no automated cross-engine test yet.
 
 ## Threat model
 
-**Encrypted data.** Everything a person writes: contact details, work
-history, skills, the photo, drafts, cover letters, the application board and
-the pasted job ads. All of it is stored as AES-256-GCM ciphertext under a key
-the server never sees.
+**The server holds** a peppered Argon2id hash of a value derived from your
+password, a SHA-256 of the recovery code's verifier, the wrapped copies of
+your content key with their salt and parameters, ciphertext, and plaintext
+metadata: ids, ordering, timestamps, sizes and counts, your email, plan and
+billing state, and each CV's template, target region, language and whether
+it has a photo. It can see how many jobs you have listed. It cannot read
+one.
 
-**Visible metadata.** Row ids and the links between them, ordering,
-timestamps, version counters, sizes and counts, the account's email address,
-plan and billing state, and for each CV its template, target region,
-language and whether it has a photo. The server can see how many job entries
-exist, but not their contents.
+**A leaked database** lets an attacker guess passwords offline, at one
+Argon2id derivation (64 MiB, three passes) per guess. A weak password falls
+to that. A strong one does not, and the recovery code cannot be guessed at
+all: 160 random bits.
 
-**Authentication data.** A peppered Argon2id hash of a value derived from
-the password (never the password itself), a SHA-256 of the recovery code's
-verifier, and the wrapped copies of the content key along with the salt and
-Argon2id parameters they were derived with.
+**AI features** send the text they work on through the server to the AI
+vendor, with names and contact details stripped first. A compromised server
+could read those requests in flight. It still cannot read anything it
+stores.
 
-A leaked database would allow offline password guessing, at the cost of one
-Argon2id derivation (64 MiB, three passes) per guess, which is why password
-strength still matters. The recovery code is 160 random bits and cannot be
-guessed this way.
-
-AI features are the exception to "the server never sees content". When a
-person runs one, the text it works on is sent through the server to the AI
-vendor, with names and contact details stripped first. The server handles
-that text in memory for the duration of the request and does not store it.
-
-There is one limitation no format can remove: the frontend itself still
-needs to be trusted. A browser app is only as trustworthy as the code it is
-served, and a malicious bundle could read what the person types. This
-package lets the format be checked independently of the bundle, which is as
-far as a format can go. A security page with the full picture is coming at
+**The limit** is the bundle. A browser app is only as trustworthy as the
+code it is served, and a malicious bundle can read what you type. This
+package lets you check the format independently of the bundle, which is the
+most a format can do. A security page with the full picture is coming at
 careerforge.app.
 
-## Key hierarchy
+## The hierarchy
 
 ```text
   password + kdfSalt
@@ -88,16 +73,14 @@ careerforge.app.
                         wrapped copies, one per unlock method.
 ```
 
-The server hashes the submitted `authKey` again with Argon2id and a
-server-side pepper, and stores that. Nothing the server holds leads back to
-`encKey`.
+The server hashes the submitted `authKey` again, with a server-side pepper,
+and stores that. Nothing it holds leads back to `encKey`.
 
-Content is encrypted under a random `userKey` rather than under the master
-key directly. A password change then only re-wraps 32 bytes instead of
-re-encrypting everything, and a password and a recovery code can both unlock
-the same data.
+Content is encrypted under a random `userKey` rather than the master key, so
+a password change re-wraps 32 bytes instead of re-encrypting everything, and
+a password and a recovery code can unlock the same data.
 
-## Recovery code
+## The recovery code
 
 ```text
   recoveryCode ...... 20 random bytes, Crockford base32, shown once
@@ -110,18 +93,13 @@ the same data.
                                                           during a reset
 ```
 
-The recovery code uses the same split as the password, but without Argon2id.
-Stretching compensates for the low entropy of human passwords, and this
-value has 160 bits from a CSPRNG, so there is nothing to compensate for. It
-also has to work during a reset, when the account's KDF parameters cannot be
-fetched because the person cannot log in.
+The same split as the password, without Argon2id: stretching makes up for
+the entropy a human password lacks, and this value has 160 bits from a
+CSPRNG. It is 32 characters from `0123456789ABCDEFGHJKMNPQRSTVWXYZ`, shown
+in groups of four. Parsing ignores case and separators, and reads `I` and
+`L` as `1` and `O` as `0`. The code never leaves the device.
 
-The code is 32 characters from `0123456789ABCDEFGHJKMNPQRSTVWXYZ`, shown in
-groups of four. Parsing ignores case and separators, and reads `I` and `L`
-as `1` and `O` as `0`. The code itself never leaves the device; only the
-verifier is sent, during a reset.
-
-## Envelope format
+## The envelope
 
 ```text
   +---------+----------+----------------------------+
@@ -130,33 +108,28 @@ verifier is sent, during a reset.
   +---------+----------+----------------------------+
 ```
 
-AES-256-GCM. Three decisions worth explaining:
+AES-256-GCM, with three decisions behind it:
 
-- **A version byte on every envelope.** Changing the key or the cipher
-  later means a client-side migration over rows the server cannot read, and
-  the version byte is how a future client knows what it is looking at.
+- **A version byte**, so a future client can tell what it is holding when
+  it migrates rows the server cannot read.
 - **A random nonce per record.** A counter would need state shared across
-  tabs, devices and offline edits, and a repeated nonce under one key breaks
-  GCM.
-- **A domain in the authenticated data** (`careerforge.v1.<domain>`). This
-  stops ciphertext from one slot being accepted in another. For tables with
-  many rows per user, the row's own id is included as well
+  tabs, devices and offline edits.
+- **A domain in the authenticated data** (`careerforge.v1.<domain>`), so
+  ciphertext valid in one slot is not valid in another. Rows in a
+  multi-row table fold their own id in as well
   (`EnvelopeDomain.forEntity`), so a content column moved to another row
-  fails to decrypt. The domain is not stored; the reader knows which slot it
-  is reading. Because of this, renaming a domain string would make every row
-  in that slot unreadable.
+  stops opening. Renaming a domain string makes every row in that slot
+  unopenable.
 
-## Crypto engines
+## The engine seam
 
-`CryptoEngine` is a small interface covering Argon2id and AES-GCM seal/open.
-Everything above it, the envelope, the HKDF split and the key hierarchy, is
-plain Dart shared by every implementation. `PureDartCryptoEngine` is the
-reference. The app's browser engine replaces it in production because
-pure-Dart Argon2id compiled to JavaScript is far too slow for an unlock. A
-second engine only has to agree on primitives with published test vectors,
-not on a format it could get subtly wrong.
+`CryptoEngine` covers Argon2id and AES-GCM seal/open, nothing else.
+Everything above it is plain Dart. `PureDartCryptoEngine` is the reference;
+the app's browser engine replaces it because pure-Dart Argon2id compiled to
+JavaScript is far too slow. A second engine only has to agree on primitives
+with published test vectors, not on a format it could get subtly wrong.
 
-## Running the tests
+## Verifying it yourself
 
 ```bash
 dart pub get
@@ -164,40 +137,35 @@ dart test
 dart run example/main.dart
 ```
 
-The published vectors are:
-
-| Vector | What it checks |
+| Vector | What it proves |
 |---|---|
-| RFC 9106 §5.3 | the Argon2id implementation (version 0x13) and the parameter mapping |
-| RFC 5869 A.1 | the HKDF-Expand implementation |
-| NIST CAVP | the AES-256-GCM implementation |
+| RFC 9106 §5.3 | the primitive is Argon2id v0x13, and the parameters mean what they say |
+| RFC 5869 A.1 | HKDF-Expand is HKDF-Expand |
+| NIST CAVP | AES-256-GCM is AES-256-GCM |
 
-The repository also includes test vectors with fixed passwords, salts and
-recovery codes. These are not independent checks of the underlying
-algorithms, but they ensure that different implementations produce the same
-results, which matters for compatibility with existing encrypted data.
+The self-generated vectors beside them (a fixed password, salt and recovery
+code with their expected outputs) prove nothing about the algorithms. They
+exist so a second implementation can be held to the same answers. **If one
+of them changes, every existing account is locked out of that door.**
 
 ## Known gaps
 
 - **Passwords are not Unicode-normalised.** A composed and a combining
   accent derive different keys.
 - **Key material is never zeroized.** Dart strings are immutable and the
-  heap is garbage collected, so there is no reliable way to wipe a key. Keys
-  live in locals or in fields the app clears on sign-out, and nothing is
-  written to storage in the clear.
-- **Domain and label strings must be ASCII.** The encoding would silently
-  truncate anything above `0xff`, so the package refuses non-ASCII input
-  instead.
-- **No automated cross-engine test.** The browser engine is checked against
-  the vectors here by hand when its Argon2 build changes.
+  heap is garbage collected. Keys live in locals or in fields the app clears
+  on sign-out, and nothing is written to storage in the clear.
+- **Domain and label strings must be ASCII**, and the package refuses
+  otherwise, because the encoding would silently truncate anything above
+  `0xff`.
 
 ## Where this is developed
 
-This repository is a read-only mirror of the `careerforge_crypto/` directory
-in CareerForge's private monorepo, synced on every merge to main. It is
-identical apart from one `resolution: workspace` line in `pubspec.yaml`.
-Issues are welcome here. A pull request will be applied in the monorepo by
-hand, credited, and will arrive with the next sync.
+This is a read-only mirror of the `careerforge_crypto/` directory in
+CareerForge's private monorepo, synced on every merge to main and identical
+apart from one `resolution: workspace` line in `pubspec.yaml`. Issues are
+welcome here. A pull request will be applied in the monorepo by hand,
+credited, and arrive with the next sync.
 
 ## Security
 
